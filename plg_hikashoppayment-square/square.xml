@@ -1,0 +1,45 @@
+<?xml version="1.0" encoding="utf-8"?>
+<extension type="plugin" version="2.5" method="upgrade" group="hikashoppayment">
+	<name>Square Payment Plugin for HikaShop</name>
+	<creationDate>July 2026</creationDate>
+	<version>1.0</version>
+	<license>http://www.gnu.org/licenses/gpl-3.0.html GNU/GPL</license>
+	<description>PLG_HIKASHOP_PAYMENT_SQUARE_DESCRIPTION</description>
+
+	<files>
+		<filename plugin="square">square.php</filename>
+		<filename>square_end.php</filename>
+		<filename>index.html</filename>
+	</files>
+
+	<languages folder="language">
+		<language tag="en-GB">en-GB/en-GB.plg_hikashoppayment_square.ini</language>
+		<language tag="en-GB">en-GB/en-GB.plg_hikashoppayment_square.sys.ini</language>
+    <language tag="fr-FR">fr-FR/fr-FR.plg_hikashoppayment_square.ini</language>
+		<language tag="fr-FR">fr-FR/fr-FR.plg_hikashoppayment_square.sys.ini</language>
+	</languages>
+  
+  <media folder="media" destination="com_hikashop/images/payment">
+    <filename>square.jpg</filename>
+  </media>
+
+	<!-- Legacy parameters for older Joomla versions -->
+	<params addpath="/components/com_hikashop/params">
+		<param name="pluginoptions" type="pluginoptions" default="plugin" label="hikashop" description="HikaShop options"/>
+	</params>
+
+	<!-- Standard HikaShop plugin configuration binding -->
+	<config>
+		<fields name="params" addfieldpath="/components/com_hikashop/fields">
+			<fieldset name="basic">
+				<field id="pluginoptions" name="pluginoptions" type="pluginoptions" label="hikashop" description="HikaShop options"/>
+			</fieldset>
+		</fields>
+	</config>
+  
+  <changelogurl>https://raw.githubusercontent.com/brettvac/Square-Payment-Plugin-for-Hikashop/refs/heads/main/update/changelog.xml</changelogurl>
+  
+  <updateservers>
+    <server name="Square Payment Plugin for HikaShop updates" type="extension">https://raw.githubusercontent.com/brettvac/Square-Payment-Plugin-for-Hikashop/refs/heads/main/update/updates.xml</server>
+  </updateservers>
+</extension>
