@@ -19,9 +19,9 @@
 		<language tag="fr-FR">fr-FR/fr-FR.plg_hikashoppayment_square.sys.ini</language>
 	</languages>
   
-  <media folder="media" destination="com_hikashop/images/payment">
+<!--<media folder="media" destination="com_hikashop/images/payment">
     <filename>square.jpg</filename>
-  </media>
+  </media> -->
 
 	<!-- Legacy parameters for older Joomla versions -->
 	<params addpath="/components/com_hikashop/params">
