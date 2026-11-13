@@ -1,63 +1,93 @@
 <?php
 /**
- * @package    Square Payment Plugin for HikaShop
- * @license    GNU/GPLv3 http://www.gnu.org/licenses/gpl-3.0.html
+ * @package     Joomla.Site
+ * @subpackage  plg_hikashoppayment_square
+ * @version     1.0
+ * @license     GNU General Public License version 3
  */
+
 defined('_JEXEC') or die('Restricted access');
 
 use Joomla\CMS\Factory;
 use Joomla\CMS\Language\Text;
 
+$doc = Factory::getDocument();
+
+// Safely prepare JavaScript values.
+$debug = (string) ($this->payment_params->debug ?? '0');
+$checkoutUrl = $this->checkout_url;
+$generalError = Text::_('PLG_HIKASHOP_PAYMENT_SQUARE_GENERAL_ERROR');
+
 $js = '
     function goToSquareGateway() {
+        const button = document.getElementById("idevGoToSquareGateway");
+        const debug = ' . json_encode($debug) . ';
+
         try {
-            var debug = "'. @$this->payment_params->debug .'";
-            jQuery("#idevGoToSquareGateway").prop("disabled", true);
-            
-            // Redirect the window to the newly generated Square Payment Link URL
-            window.location.href = "'. $this->checkout_url .'";
-            
-        } catch(e) {
-            jQuery("#idevGoToSquareGateway").prop("disabled", false);
-            if(debug == "1") {
-                if(e.message) {
-                    alert(e.message);
-                } else {
-                    alert(e);
-                }
+            if (button) {
+                button.disabled = true;
             }
-            alert("' . addslashes(Text::_('PLG_HIKASHOP_PAYMENT_SQUARE_GENERAL_ERROR')) . '");
+
+            // Redirect to the generated Square Payment Link URL.
+            window.location.href = ' . json_encode($checkoutUrl) . ';
+
+        } catch (e) {
+            if (button) {
+                button.disabled = false;
+            }
+
+            if (debug === "1") {
+                alert(e.message || e);
+            }
+
+            alert(' . json_encode($generalError) . ');
         }
     }
-    jQuery(document).ready(function() {
-        // Give the customer time to see the redirect message.
-        setTimeout(function() {
-            goToSquareGateway();
-        }, 500);
-    });
+
+    // Wait until the DOM is ready before starting the redirect.
+    if (document.readyState === "loading") {
+        document.addEventListener("DOMContentLoaded", function() {
+            setTimeout(goToSquareGateway, 500);
+        });
+    } else {
+        setTimeout(goToSquareGateway, 500);
+    }
 ';
 
-$doc = Factory::getDocument();
-hikashop_loadJsLib('jquery');
-$doc->addScriptDeclaration($js);
+// Register JavaScript using Joomla Web Asset Manager when available.
+$wa = $doc->getWebAssetManager();
+$wa->addInlineScript($js);
 
 ?>
 
 <div class="hikashop_square_end" id="hikashop_square_end">
     <fieldset>
-        <legend><?php echo Text::_('PLG_HIKASHOP_PAYMENT_SQUARE_REDIRECTING'); ?></legend>
-        <div id="idevSquareCheckoutContainer" style="width:100%;margin:auto;text-align:center;">
-            
-            <span id="hikashop_square_end_message" class="hikashop_square_end_message">
-                <?php echo Text::sprintf('PLG_HIKASHOP_PAYMENT_SQUARE_PLEASE_WAIT', $this->payment_name) . '<br/>' . Text::_('PLG_HIKASHOP_PAYMENT_SQUARE_IF_NOT_REDIRECTED'); ?>
+        <legend>
+            <?php echo Text::_('PLG_HIKASHOP_PAYMENT_SQUARE_REDIRECTING'); ?>
+        </legend>
+
+        <div id="idevSquareCheckoutContainer"
+             style="width:100%;margin:auto;text-align:center;">
+
+            <span id="hikashop_square_end_message"
+                  class="hikashop_square_end_message">
+                <?php
+                echo Text::sprintf(
+                    'PLG_HIKASHOP_PAYMENT_SQUARE_PLEASE_WAIT',
+                    $this->payment_name
+                ) . '<br/>' . Text::_('PLG_HIKASHOP_PAYMENT_SQUARE_IF_NOT_REDIRECTED');
+                ?>
             </span>
-            
+
             <br/><br/>
-            
-            <button id="idevGoToSquareGateway" class="btn btn-success btn-lg btn-block" onclick="goToSquareGateway();">
+
+            <button type="button"
+                    id="idevGoToSquareGateway"
+                    class="btn btn-success btn-lg btn-block"
+                    onclick="goToSquareGateway();">
                 <?php echo Text::_('PLG_HIKASHOP_PAYMENT_SQUARE_PROCEED_TO_PAYMENT'); ?>
             </button>
-            
+
         </div>
     </fieldset>
 </div>

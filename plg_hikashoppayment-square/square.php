@@ -1,7 +1,9 @@
 <?php
 /**
- * @package    Square Payment Plugin for HikaShop
- * @license    GNU/GPLv3 http://www.gnu.org/licenses/gpl-3.0.html
+ * @package     Joomla.Site
+ * @subpackage  plg_hikashoppayment_square
+ * @version     1.0
+ * @license     GNU General Public License version 3
  */
 defined('_JEXEC') or die('Restricted access');
 
@@ -11,20 +13,23 @@ use Joomla\CMS\HTML\HTMLHelper;
 use Joomla\CMS\Language\LanguageHelper;
 use Joomla\CMS\Menu\AbstractMenu;
 use Joomla\Database\DatabaseInterface;
+use Joomla\CMS\Http\HttpFactory;
 
 class plgHikashoppaymentSquare extends hikashopPaymentPlugin
 {
     protected $autoloadLanguage = true;
+    
     public $multiple = true;              // Allow the plugin to support multiple instances
     public $name = 'square';              // Internal name of the plugin (matches plugin entry file)
     public $doc_form = 'square';          // Generate the help link in the backend configuration          
     public $use_cache = false;            
-    public $menu = [];
     
     public $environments = array(
         'test' => 'https://connect.squareupsandbox.com/v2/online-checkout/payment-links',
         'prod' => 'https://connect.squareup.com/v2/online-checkout/payment-links'
     );
+    
+    var $squareLocations = array();
     
     private const ZERO_DECIMAL_CURRENCIES = [
         'BIF', 'CLP', 'DJF', 'GNF', 'JPY', 'KMF', 'KRW', 'MGA', 
@@ -34,7 +39,7 @@ class plgHikashoppaymentSquare extends hikashopPaymentPlugin
     var $pluginConfig = array(
         'application_id' => array('PLG_HIKASHOP_PAYMENT_SQUARE_APPLICATION_ID', 'input'),
         'access_token' => array('PLG_HIKASHOP_PAYMENT_SQUARE_ACCESS_TOKEN', 'password', ''),
-        'location_id' => array('PLG_HIKASHOP_PAYMENT_SQUARE_LOCATION_ID', 'input'),
+        'location_id' => array('PLG_HIKASHOP_PAYMENT_SQUARE_LOCATION_ID', 'square_location', ''),
         'webhook_url_info' => array('PLG_HIKASHOP_PAYMENT_SQUARE_WEBHOOK_URL_INFO', 'html', ''),
         'webhook_signature_key' => array('PLG_HIKASHOP_PAYMENT_SQUARE_WEBHOOK_SIGNATURE_KEY', 'password', ''),
         'payment_mode' => array('PLG_HIKASHOP_PAYMENT_SQUARE_PAYMENT_MODE', 'list', array(
@@ -54,13 +59,6 @@ class plgHikashoppaymentSquare extends hikashopPaymentPlugin
         if ($init !== null) return $init;
 
         $app = Factory::getApplication();
-        
-        if (!function_exists('curl_version')) {
-            if ($app->isClient('administrator')) {
-                $app->enqueueMessage(Text::_('PLG_HIKASHOP_PAYMENT_SQUARE_CURL_NOT_ENABLED'), 'error');
-            }
-            return false;
-        }
 
         $init = true;
         return $init;
@@ -87,6 +85,17 @@ class plgHikashoppaymentSquare extends hikashopPaymentPlugin
         
         if ($app->isClient('administrator')) {
             $this->init();
+
+            $token = isset($element->payment_params->access_token) ? trim($element->payment_params->access_token) : '';
+            $isTest = (isset($element->payment_params->payment_mode) && $element->payment_params->payment_mode === 'true');
+
+            if (!empty($token)) {
+                $locationResult = $this->getSquareLocations($token, $isTest);
+
+                if (!empty($locationResult['locations'])) {
+                    $this->squareLocations = $locationResult['locations'];
+                }
+            }
             
             // Render the exact Webhook URL the merchant needs to paste into the Square Developer Dashboard
             $webhook_url = HIKASHOP_LIVE . 'index.php?option=com_hikashop&ctrl=checkout&task=notify&notif_payment=' . $this->name;
@@ -123,71 +132,99 @@ class plgHikashoppaymentSquare extends hikashopPaymentPlugin
         $locationId = isset($params->location_id) ? trim($params->location_id) : '';
         $appId = isset($params->application_id) ? trim($params->application_id) : '';
 
-        // Validate Access Token, Location ID, and Application ID Keys
-        if (empty($token) || empty($locationId) || empty($appId)) {
+        // Validate Access Token and Application ID Keys
+        if (empty($token) || empty($appId)) {
             $app->enqueueMessage(Text::_('PLG_HIKASHOP_PAYMENT_SQUARE_VALIDATION_SKIPPED'), 'warning');
             return;
         }
 
-        $ch = curl_init($baseUrl . '/v2/locations');
-        curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
-        curl_setopt($ch, CURLOPT_HTTPGET, true);
-        curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, true);
-        curl_setopt($ch, CURLOPT_SSL_VERIFYHOST, 2);
-        curl_setopt($ch, CURLOPT_CONNECTTIMEOUT, 10);
-        curl_setopt($ch, CURLOPT_TIMEOUT, 30);
-        curl_setopt($ch, CURLOPT_HTTPHEADER, [
-            'Square-Version: 2026-07-15',
-            'Authorization: Bearer ' . $token,
-            'Content-Type: application/json'
-        ]);
+        /*
+         * Retrieve Square locations and automatically populate the Location ID
+         * when no Location ID has been saved yet.
+         */
+        $locationResult = $this->getSquareLocations($token, $isTest);
 
-        $response = curl_exec($ch);
-        $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
-        curl_close($ch);
-
-        if ($httpCode === 401) {
+        if ($locationResult['http_code'] === 401) {
             $app->enqueueMessage(Text::_('PLG_HIKASHOP_PAYMENT_SQUARE_VALIDATION_WARNING'), 'warning');
             return; // No point in continuing to webhooks if unauthorized
-        } elseif ($httpCode >= 200 && $httpCode < 300) {
-            $data = json_decode($response, true);
-            $locationFound = false;
-            
-            if (!empty($data['locations'])) {
-                foreach ($data['locations'] as $loc) {
-                    if ($loc['id'] === $locationId) {
+        } elseif ($locationResult['http_code'] >= 200 && $locationResult['http_code'] < 300) {
+            $locations = $locationResult['locations'];
+
+            if (!empty($locations)) {
+                $locationFound = false;
+
+                foreach ($locations as $loc) {
+                    if (isset($loc['id']) && $loc['id'] === $locationId) {
                         $locationFound = true;
                         break;
                     }
                 }
-            }
-            
-            if (!$locationFound) {
-                $app->enqueueMessage(Text::_('PLG_HIKASHOP_PAYMENT_SQUARE_LOCATION_ID_MISMATCH'), 'warning');
+
+                /*
+                 * Automatically select the oldest ACTIVE location when
+                 * no Location ID has been provided yet.
+                 */
+                if (empty($locationId)) {
+                    $activeLocations = array();
+
+                    foreach ($locations as $loc) {
+                        if (
+                            isset($loc['id']) &&
+                            isset($loc['status']) &&
+                            $loc['status'] === 'ACTIVE'
+                        ) {
+                            $activeLocations[] = $loc;
+                        }
+                    }
+
+                    if (!empty($activeLocations)) {
+                        usort($activeLocations, function($a, $b) {
+                            $aCreated = isset($a['created_at']) ? $a['created_at'] : '';
+                            $bCreated = isset($b['created_at']) ? $b['created_at'] : '';
+
+                            return strcmp($aCreated, $bCreated);
+                        });
+
+                        $locationId = $activeLocations[0]['id'];
+                        $params->location_id = $locationId;
+                        $locationFound = true;
+
+                        $app->enqueueMessage(
+                            Text::sprintf(
+                                'PLG_HIKASHOP_PAYMENT_SQUARE_LOCATION_ID_AUTOMATIC',
+                                $locationId
+                            ),
+                            'message'
+                        );
+                    }
+                } elseif (!$locationFound) {
+                    $app->enqueueMessage(Text::_('PLG_HIKASHOP_PAYMENT_SQUARE_LOCATION_ID_MISMATCH'), 'warning');
+                }
+            } else {
+                $app->enqueueMessage(Text::_('PLG_HIKASHOP_PAYMENT_SQUARE_NO_LOCATIONS'), 'warning');
             }
         } else {
-            $app->enqueueMessage(Text::sprintf('PLG_HIKASHOP_PAYMENT_SQUARE_CREDENTIALS_CONNECTION_WARNING', $httpCode), 'warning');
+            $app->enqueueMessage(Text::sprintf('PLG_HIKASHOP_PAYMENT_SQUARE_CREDENTIALS_CONNECTION_WARNING', $locationResult['http_code']), 'warning');
         }
 
         // Validate Webhook Subscription Setup
         $expectedUrl = HIKASHOP_LIVE . 'index.php?option=com_hikashop&ctrl=checkout&task=notify&notif_payment=' . $this->name;
         
-        $chWeb = curl_init($baseUrl . '/v2/webhooks/subscriptions');
-        curl_setopt($chWeb, CURLOPT_RETURNTRANSFER, true);
-        curl_setopt($chWeb, CURLOPT_HTTPGET, true);
-        curl_setopt($chWeb, CURLOPT_SSL_VERIFYPEER, true);
-        curl_setopt($chWeb, CURLOPT_SSL_VERIFYHOST, 2);
-        curl_setopt($chWeb, CURLOPT_CONNECTTIMEOUT, 10);
-        curl_setopt($chWeb, CURLOPT_TIMEOUT, 30);
-        curl_setopt($chWeb, CURLOPT_HTTPHEADER, [
-            'Square-Version: 2026-07-15',
-            'Authorization: Bearer ' . $token,
-            'Content-Type: application/json'
-        ]);
+        $http = HttpFactory::getHttp(['timeout' => 30]);
+        $headers = [
+            'Square-Version' => '2026-07-15',
+            'Authorization' => 'Bearer ' . $token,
+            'Content-Type' => 'application/json'
+        ];
 
-        $webResponse = curl_exec($chWeb);
-        $webHttpCode = curl_getinfo($chWeb, CURLINFO_HTTP_CODE);
-        curl_close($chWeb);
+        try {
+            $response = $http->get($baseUrl . '/v2/webhooks/subscriptions', $headers);
+            $webHttpCode = $response->code;
+            $webResponse = $response->body;
+        } catch (\Throwable $e) {
+            $webHttpCode = 0;
+            $webResponse = $e->getMessage();
+        }
 
         if ($webHttpCode >= 200 && $webHttpCode < 300) {
             $webData = json_decode($webResponse, true);
@@ -209,6 +246,7 @@ class plgHikashoppaymentSquare extends hikashopPaymentPlugin
             $app->enqueueMessage(Text::sprintf('PLG_HIKASHOP_PAYMENT_SQUARE_WEBHOOK_CONNECTION_WARNING', $webHttpCode), 'warning');
         }
     }
+ 
 
     public function pluginConfigDisplay($fieldType, $data, $type, $paramsType, $key, $element)
     {
@@ -217,6 +255,43 @@ class plgHikashoppaymentSquare extends hikashopPaymentPlugin
                 $map = 'data[' . $type . '][' . $paramsType . '][' . $key . ']';
                 $value = (isset($element->$paramsType->$key) ? $element->$paramsType->$key : '');
                 return '<input type="password" name="' . $map . '" value="' . $value . '" />';
+            } elseif ($fieldType == 'square_location') {
+                $map = 'data[' . $type . '][' . $paramsType . '][' . $key . ']';
+                $value = (isset($element->$paramsType->$key) ? $element->$paramsType->$key : '');
+
+                $options = array();
+
+                if (!empty($this->squareLocations)) {
+                    foreach ($this->squareLocations as $location) {
+                        if (!isset($location['id'])) {
+                            continue;
+                        }
+
+                        $name = isset($location['name']) ? $location['name'] : $location['id'];
+                        $status = isset($location['status']) ? $location['status'] : '';
+
+                        if (!empty($status) && $status !== 'ACTIVE') {
+                            $name .= ' (' . $status . ')';
+                        }
+
+                        $option = new stdClass;
+                        $option->value = $location['id'];
+                        $option->text = $name . ' — ' . $location['id'];
+                        $options[] = $option;
+                    }
+                }
+
+                if (empty($options)) {
+                    $option = new stdClass;
+                    $option->value = '';
+                    $option->text = Text::_('PLG_HIKASHOP_PAYMENT_SQUARE_LOCATION_ID_NO_LOCATIONS');
+                    $options[] = $option;
+                }
+
+                return HTMLHelper::_('select.genericlist', $options, $map, array(
+                    'list.select' => $value,
+                    'list.attr' => 'class=""'
+                ));
             }
         } else {
             if ($fieldType[0] == 'menu_itemid') {
@@ -243,6 +318,49 @@ class plgHikashoppaymentSquare extends hikashopPaymentPlugin
                 return HTMLHelper::_('select.groupedlist', $groups, $map, array('list.select' => $value, 'list.attr' => 'class=""'));
             }
         }
+    }
+    
+    /**
+     * Retrieve the Square locations associated with the Access Token.
+     */
+    protected function getSquareLocations($token, $isTest)
+    {
+        $baseUrl = $isTest ? 'https://connect.squareupsandbox.com' : 'https://connect.squareup.com';
+
+        $http = HttpFactory::getHttp(['timeout' => 30]);
+        $headers = [
+            'Square-Version' => '2026-07-15',
+            'Authorization' => 'Bearer ' . $token,
+            'Content-Type' => 'application/json'
+        ];
+
+        try {
+            $response = $http->get($baseUrl . '/v2/locations', $headers);
+            $httpCode = $response->code;
+            $body = $response->body;
+        } catch (\Throwable $e) {
+            return array(
+                'locations' => array(),
+                'http_code' => 0,
+                'response' => $e->getMessage()
+            );
+        }
+
+        if ($httpCode < 200 || $httpCode >= 300) {
+            return array(
+                'locations' => array(),
+                'http_code' => $httpCode,
+                'response' => $body
+            );
+        }
+
+        $data = json_decode($body, true);
+
+        return array(
+            'locations' => !empty($data['locations']) ? $data['locations'] : array(),
+            'http_code' => $httpCode,
+            'response' => $body
+        );
     }
 
     public function onPaymentDisplay(&$order, &$methods, &$usable_methods)
@@ -289,7 +407,6 @@ class plgHikashoppaymentSquare extends hikashopPaymentPlugin
         $sessionKey = 'square_checkout_url_' . $order->order_id;
         if ($session->has($sessionKey)) {
             $this->checkout_url = $session->get($sessionKey);
-            $this->removeCart = true;
             return $this->showPage('end');
         }
         
@@ -400,42 +517,45 @@ class plgHikashoppaymentSquare extends hikashopPaymentPlugin
             ]
         ];
 
-        $ch = curl_init($endpoint);
-        curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
-        curl_setopt($ch, CURLOPT_POST, true);
-        curl_setopt($ch, CURLOPT_POSTFIELDS, json_encode($payload));
-        
-        // Strictly enforce HTTPS and SSL verification
-        curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, true);
-        curl_setopt($ch, CURLOPT_SSL_VERIFYHOST, 2);
-        
-        // Add cURL timeouts
-        curl_setopt($ch, CURLOPT_CONNECTTIMEOUT, 10);
-        curl_setopt($ch, CURLOPT_TIMEOUT, 30);
+        $http = HttpFactory::getHttp(['timeout' => 30]);
+        $headers = [
+            'Square-Version' => '2026-07-15',
+            'Authorization' => 'Bearer ' . $this->payment_params->access_token,
+            'Content-Type' => 'application/json'
+        ];
 
-        // Set the Square API version, authentication token, and JSON content type.
-        curl_setopt($ch, CURLOPT_HTTPHEADER, [
-            'Square-Version: 2026-07-15',
-            'Authorization: Bearer ' . $this->payment_params->access_token,
-            'Content-Type: application/json'
-        ]);
+        try {
+            $jsonPayload = json_encode($payload, JSON_THROW_ON_ERROR);
+        } catch (\JsonException $e) {
+            $app->enqueueMessage(
+                'Unable to encode the Square payment request: ' . $e->getMessage(),
+                'error'
+            );
+            return false;
+        }
 
-        $response = curl_exec($ch);
-        $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
-        $curlError = curl_error($ch);
-        curl_close($ch);
+        try {
+            $response = $http->post($endpoint, $jsonPayload, $headers);
+            $httpCode = $response->code;
+            $body = $response->body;
+            $httpError = '';
+        } catch (\Throwable $e) {
+            $httpCode = 0;
+            $body = '';
+            $httpError = $e->getMessage();
+        }
 
         // Handle completely failed connections or non-2xx HTTP responses cleanly
-        if ($curlError || $httpCode < 200 || $httpCode >= 300) {
+        if ($httpError || $httpCode < 200 || $httpCode >= 300) {
             if (isset($this->payment_params->debug) && $this->payment_params->debug == '1') {
-                $this->logSquareDebug("Square API Connection Error. HTTP Code: $httpCode | cURL Error: $curlError | Response: $response");
+                $this->logSquareDebug("Square API Connection Error. HTTP Code: $httpCode | HTTP Client Error: $httpError | Response: $body");
             }
             $app->enqueueMessage(Text::_('PLG_HIKASHOP_PAYMENT_SQUARE_GENERAL_ERROR'), 'error');
             $app->redirect(HIKASHOP_LIVE . 'index.php?option=com_hikashop&ctrl=checkout');
             return false;
         }
 
-        $responseData = json_decode($response, true);
+        $responseData = json_decode($body, true);
 
         if (isset($responseData['payment_link']['url'])) {
             $this->checkout_url = $responseData['payment_link']['url'];
@@ -461,8 +581,6 @@ class plgHikashoppaymentSquare extends hikashopPaymentPlugin
             }
 
             hikashop_get('class.order')->save($updateOrder);
-
-            $this->removeCart = true;
 
             return $this->showPage('end');
         } else {
@@ -490,44 +608,39 @@ class plgHikashoppaymentSquare extends hikashopPaymentPlugin
 
         $url = $baseUrl . '/v2/orders/' . rawurlencode($squareOrderId);
 
-        $ch = curl_init($url);
+        $http = HttpFactory::getHttp(['timeout' => 30]);
+        $headers = [
+            'Square-Version' => '2026-07-15',
+            'Authorization' => 'Bearer ' . $this->payment_params->access_token,
+            'Content-Type' => 'application/json'
+        ];
 
-        curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
-        curl_setopt($ch, CURLOPT_HTTPGET, true);
+        try {
+            $response = $http->get($url, $headers);
+            $httpCode = $response->code;
+            $body = $response->body;
+            $httpError = '';
+        } catch (\Throwable $e) {
+            $httpCode = 0;
+            $body = '';
+            $httpError = $e->getMessage();
+        }
 
-        curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, true);
-        curl_setopt($ch, CURLOPT_SSL_VERIFYHOST, 2);
-
-        curl_setopt($ch, CURLOPT_CONNECTTIMEOUT, 10);
-        curl_setopt($ch, CURLOPT_TIMEOUT, 30);
-
-        curl_setopt($ch, CURLOPT_HTTPHEADER, array(
-            'Square-Version: 2026-07-15',
-            'Authorization: Bearer ' . $this->payment_params->access_token,
-            'Content-Type: application/json'
-        ));
-
-        $response = curl_exec($ch);
-        $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
-        $curlError = curl_error($ch);
-
-        curl_close($ch);
-
-        if ($curlError || $httpCode < 200 || $httpCode >= 300) {
+        if ($httpError || $httpCode < 200 || $httpCode >= 300) {
             if (isset($this->payment_params->debug) && $this->payment_params->debug == '1') {
                 $this->logSquareDebug(
                     'Square Get Order failed. ' .
                     'Order: ' . $squareOrderId .
                     ' | HTTP: ' . $httpCode .
-                    ' | cURL: ' . $curlError .
-                    ' | Response: ' . $response
+                    ' | HTTP Client Error: ' . $httpError .
+                    ' | Response: ' . $body
                 );
             }
 
             return false;
         }
 
-        $data = json_decode($response, true);
+        $data = json_decode($body, true);
 
         if (!is_array($data) || empty($data['order'])) {
             if (isset($this->payment_params->debug) && $this->payment_params->debug == '1') {
